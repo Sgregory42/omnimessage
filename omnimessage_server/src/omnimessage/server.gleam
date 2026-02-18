@@ -564,6 +564,7 @@ pub fn dream_websocket_stateful_handlers(
     }
   }
 
+  // TODO: handle on_close
   let on_close = fn(_state: StatefulState(state, msg), _deps: deps) { Nil }
 
   StatefulHandlers(on_init:, on_message:, on_close:)

@@ -8,7 +8,8 @@
 /// something is missing. Underneath, a transport is just some callbacks for
 /// when you receive an already encoded message.
 ///
-/// Note that transports do not your support automatic reconnection on errors.
+/// The websocket transport supports automatic reconnection with exponential
+/// backoff when configured with a `ReconnectConfig`.
 ///
 import gleam/dict
 import gleam/fetch
@@ -16,7 +17,7 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/javascript/promise
-import gleam/option
+import gleam/option.{type Option, None}
 import gleam/result
 
 import omnimessage/lustre/internal/transports/websocket
@@ -30,6 +31,7 @@ import omnimessage/lustre/internal/transports/websocket
 pub type TransportState(decode_error) {
   TransportUp
   TransportDown(code: Int, message: String)
+  TransportReconnecting(attempt: Int, delay_ms: Int)
   TransportError(TransportError(decode_error))
 }
 
@@ -54,6 +56,25 @@ pub type TransportHandlers(encoding, decode_error) {
     on_down: fn(Int, String) -> Nil,
     on_message: fn(encoding) -> Nil,
     on_error: fn(TransportError(decode_error)) -> Nil,
+    on_reconnecting: fn(Int, Int) -> Nil,
+  )
+}
+
+/// Controls reconnection behavior for the websocket transport.
+/// Use `Default` for sensible defaults (infinite retries, 1s initial delay,
+/// 30s max delay, 2x backoff), or `ReconnectConfig` to customize.
+///
+pub type ReconnectOption {
+  Default
+  ReconnectConfig(
+    /// Maximum number of reconnection attempts. `None` means infinite retries.
+    max_attempts: Option(Int),
+    /// Initial delay in milliseconds before the first reconnection attempt.
+    initial_delay_ms: Int,
+    /// Maximum delay in milliseconds between reconnection attempts.
+    max_delay_ms: Int,
+    /// Multiplier applied to the delay after each failed attempt.
+    backoff_multiplier: Float,
   )
 }
 
@@ -66,22 +87,41 @@ pub type Transport(encoding, decode_error) {
 }
 
 @target(javascript)
-/// A websocket transport using text frames
-pub fn websocket(path: String) -> Transport(String, decode_error) {
-  case websocket.init(path) {
-    Ok(ws) -> {
+/// A websocket transport using text frames with automatic reconnection.
+///
+pub fn websocket(
+  path: String,
+  reconnect: ReconnectOption,
+) -> Transport(String, decode_error) {
+  let #(max_attempts, initial_delay_ms, max_delay_ms, backoff_multiplier) =
+    case reconnect {
+      Default -> #(None, 1000, 30_000, 2.0)
+      ReconnectConfig(ma, id, md, bm) -> #(ma, id, md, bm)
+    }
+
+  case
+    websocket.init_reconnectable(
+      path,
+      max_attempts,
+      initial_delay_ms,
+      max_delay_ms,
+      backoff_multiplier,
+    )
+  {
+    Ok(rws) -> {
       Transport(
         listen: fn(handlers) {
-          websocket.listen(
-            ws,
+          websocket.listen_reconnectable(
+            rws,
             on_open: fn(_) { handlers.on_up() },
             on_text_message: handlers.on_message,
-            on_close: fn(reason) {
-              handlers.on_down(reason.code, reason.reason)
-            },
+            on_close: fn(code, reason) { handlers.on_down(code, reason) },
+            on_reconnecting: handlers.on_reconnecting,
           )
         },
-        send: fn(msg, _handlers) { websocket.send(ws, msg) },
+        send: fn(msg, _handlers) {
+          websocket.send_reconnectable(rws, msg)
+        },
       )
     }
     Error(error) ->

@@ -1,5 +1,5 @@
 name = "omnimessage_lustre"
-version = "0.3.0"
+version = "0.4.0"
 target = "javascript"
 
 description = "Use Remote State, Locally"

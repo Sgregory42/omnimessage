@@ -162,6 +162,9 @@ fn new_handlers(
       }
     },
     on_error: fn(error) { on_state(transports.TransportError(error)) },
+    on_reconnecting: fn(attempt, delay_ms) {
+      on_state(transports.TransportReconnecting(attempt, delay_ms))
+    },
   )
 }
 
